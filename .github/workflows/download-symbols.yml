@@ -99,11 +99,13 @@ jobs:
       run: |
         if [ -d "dtn_symbols/by_exchange" ]; then
           echo "Compressing split symbol files..."
+          # Add this line to remove the old file first
+          rm -f dtn_symbols/by_exchange.zip
           zip -r dtn_symbols/by_exchange.zip dtn_symbols/by_exchange
         else
           echo "Split symbol directory not found, skipping compression."
         fi
-        
+      
     # MOVED and CORRECTED: This step now runs after file creation
     - name: Commit and push if file exists
       if: steps.download.outputs.download_success == 'true'
