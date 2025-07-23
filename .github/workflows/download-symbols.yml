@@ -1,0 +1,213 @@
+name: Download DTN Symbols
+
+on:
+  schedule:
+    # Run every 12 hours at 00:00 and 12:00 UTC
+    - cron: '0 0,12 * * *'
+  workflow_dispatch:
+    inputs:
+      resume_from:
+        description: 'Resume from batch number (optional)'
+        required: false
+        type: number
+      create_release:
+        description: 'Create a release with the data'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PYTHON_VERSION: '3.10'
+  DOWNLOAD_DELAY: 2
+
+jobs:
+  download-symbols:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 hours timeout
+    
+    steps:
+    - name: Install Git LFS
+      run: |
+        sudo apt-get update
+        sudo apt-get install git-lfs
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        lfs: true
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Create output directory
+      run: mkdir -p dtn_symbols
+    
+    - name: Restore download state
+      uses: actions/cache@v3
+      with:
+        path: |
+          dtn_symbols/download_state.json
+          dtn_symbols/batch_*.csv
+        key: dtn-download-state-${{ github.run_id }}
+        restore-keys: |
+          dtn-download-state-
+    
+    - name: Download symbols
+      id: download
+      run: |
+        if [ -n "${{ github.event.inputs.resume_from }}" ]; then
+          echo "Resuming from batch ${{ github.event.inputs.resume_from }}"
+          python dtn_symbol_downloader.py --resume ${{ github.event.inputs.resume_from }} --delay ${{ env.DOWNLOAD_DELAY }}
+        else
+          python dtn_symbol_downloader.py --delay ${{ env.DOWNLOAD_DELAY }}
+        fi
+        
+        if [ -f "dtn_symbols/all_symbols_latest.csv" ]; then
+          FILE_SIZE=$(ls -lh dtn_symbols/all_symbols_latest.csv | awk '{print $5}')
+          LINE_COUNT=$(wc -l < dtn_symbols/all_symbols_latest.csv)
+          echo "file_size=$FILE_SIZE" >> $GITHUB_OUTPUT
+          echo "line_count=$LINE_COUNT" >> $GITHUB_OUTPUT
+          echo "download_success=true" >> $GITHUB_OUTPUT
+        else
+          echo "download_success=false" >> $GITHUB_OUTPUT
+        fi
+
+    # The compression steps now run BEFORE the commit
+    # - name: Compress symbols file
+    #   if: steps.download.outputs.download_success == 'true'
+    #   run: |
+    #     gzip -kf dtn_symbols/all_symbols_latest.csv
+    #     zip dtn_symbols/all_symbols_latest.zip dtn_symbols/all_symbols_latest.csv
+
+    - name: Compress split symbols directory
+      if: steps.download.outputs.download_success == 'true'
+      run: |
+        if [ -d "dtn_symbols/by_exchange" ]; then
+          echo "Compressing split symbol files..."
+          zip -r dtn_symbols/by_exchange.zip dtn_symbols/by_exchange
+        else
+          echo "Split symbol directory not found, skipping compression."
+        fi
+        
+    # MOVED and CORRECTED: This step now runs after file creation
+    - name: Commit and push if file exists
+      if: steps.download.outputs.download_success == 'true'
+      run: |
+        # git lfs track "dtn_symbols/*.csv" "dtn_symbols/*.zip" "dtn_symbols/*.csv.gz"
+        git add .gitattributes
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        git add dtn_symbols/
+        git commit -m "Automated symbol download: $(date)" || echo "No changes to commit"
+        git push
+
+    - name: Generate summary report
+      if: steps.download.outputs.download_success == 'true'
+      run: |
+        python - << 'EOF'
+        import pandas as pd
+        import json
+        from datetime import datetime
+        
+        df = pd.read_csv('dtn_symbols/all_symbols_latest.csv')
+        
+        stats = {
+            'timestamp': datetime.now().isoformat(),
+            'total_symbols': len(df),
+            'exchanges': df['exchange'].nunique() if 'exchange' in df else 0,
+            'security_types': df['securityType'].nunique() if 'securityType' in df else 0,
+            'file_size': '${{ steps.download.outputs.file_size }}',
+            'top_exchanges': df['exchange'].value_counts().head(10).to_dict() if 'exchange' in df else {},
+            'top_security_types': df['securityType'].value_counts().head(10).to_dict() if 'securityType' in df else {}
+        }
+        
+        with open('dtn_symbols/download_stats.json', 'w') as f:
+            json.dump(stats, f, indent=2)
+        
+        with open('dtn_symbols/SUMMARY.md', 'w') as f:
+            f.write(f"# DTN Symbol Download Summary\n\n")
+            f.write(f"- **Timestamp**: {stats['timestamp']}\n")
+            f.write(f"- **Total Symbols**: {stats['total_symbols']:,}\n")
+            f.write(f"- **Unique Exchanges**: {stats['exchanges']}\n")
+            f.write(f"- **Security Types**: {stats['security_types']}\n")
+            f.write(f"- **File Size**: {stats['file_size']}\n\n")
+            f.write("## Top Exchanges\n")
+            for exchange, count in list(stats['top_exchanges'].items())[:10]:
+                f.write(f"- {exchange}: {count:,}\n")
+        EOF
+    
+    - name: Upload symbols as artifact
+      if: steps.download.outputs.download_success == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: dtn-symbols-${{ github.run_number }}
+        path: |
+          # dtn_symbols/all_symbols_latest.csv.gz
+          # dtn_symbols/all_symbols_latest.zip
+          dtn_symbols/by_exchange.zip
+          # dtn_symbols/download_stats.json
+          dtn_symbols/SUMMARY.md
+        retention-days: 1
+    
+    # CORRECTED: Added by_exchange.zip to the release assets
+    - name: Create Release
+      if: steps.download.outputs.download_success == 'true' && (github.event.inputs.create_release == 'true' || github.event_name == 'schedule')
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        TAG_NAME="symbols-$(date +'%Y%m%d-%H%M%S')"
+        RELEASE_NAME="DTN Symbols - $(date +'%Y-%m-%d %H:%M:%S UTC')"
+        
+        gh release create "$TAG_NAME" \
+          --title "$RELEASE_NAME" \
+          --notes "Automated symbol download containing ${{ steps.download.outputs.line_count }} symbols" \
+          # dtn_symbols/all_symbols_latest.csv.gz \
+          dtn_symbols/by_exchange.zip \
+          dtn_symbols/download_stats.json
+    
+    - name: Clean up batch files
+      if: always()
+      run: |
+        rm -f dtn_symbols/batch_*.csv
+    
+    - name: Send notification on failure
+      if: failure()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const issue = await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `Symbol Download Failed - ${new Date().toISOString().split('T')[0]}`,
+            body: `The automated symbol download workflow failed.\n\nWorkflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            labels: ['bug', 'automation']
+          });
+          console.log(`Created issue #${issue.data.number}`);
+    
+    - name: Update workflow status
+      if: always()
+      run: |
+        echo "## Workflow Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ steps.download.outputs.download_success }}" == "true" ]; then
+          echo "✅ **Download Successful**" >> $GITHUB_STEP_SUMMARY
+          echo "- Total symbols: ${{ steps.download.outputs.line_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- File size: ${{ steps.download.outputs.file_size }}" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Download Failed**" >> $GITHUB_STEP_SUMMARY
+        fi
