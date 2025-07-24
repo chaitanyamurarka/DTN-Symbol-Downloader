@@ -3,7 +3,7 @@ name: Download DTN Symbols
 on:
   schedule:
     # Run every 12 hours at 00:00 and 12:00 UTC
-    - cron: '0 0,12 * * *'
+    - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
       resume_from:
@@ -110,7 +110,7 @@ jobs:
     - name: Commit and push if file exists
       if: steps.download.outputs.download_success == 'true'
       run: |
-        # git lfs track "dtn_symbols/*.csv" "dtn_symbols/*.zip" "dtn_symbols/*.csv.gz"
+        git lfs track "dtn_symbols/*.csv" "dtn_symbols/*.zip"
         git add .gitattributes
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
