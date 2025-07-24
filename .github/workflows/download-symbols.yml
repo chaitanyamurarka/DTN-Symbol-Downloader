@@ -26,10 +26,10 @@ jobs:
     timeout-minutes: 120  # 2 hours timeout
     
     steps:
-    # - name: Install Git LFS
-    #   run: |
-    #     sudo apt-get update
-    #     # sudo apt-get install git-lfs
+    - name: Install Git LFS
+      run: |
+        sudo apt-get update
+        # sudo apt-get install git-lfs
 
     - name: Checkout repository
       uses: actions/checkout@v4
