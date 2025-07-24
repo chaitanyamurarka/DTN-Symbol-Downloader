@@ -29,12 +29,12 @@ jobs:
     - name: Install Git LFS
       run: |
         sudo apt-get update
-        # sudo apt-get install git-lfs
+        sudo apt-get install git-lfs
 
     - name: Checkout repository
       uses: actions/checkout@v4
-      # with:
-        # lfs: true
+      with:
+        lfs: true
     
     - name: Set up Python
       uses: actions/setup-python@v5
