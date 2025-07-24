@@ -1,1 +1,2 @@
-
+dtn_symbols/*.csv filter=lfs diff=lfs merge=lfs -text
+dtn_symbols/*.zip filter=lfs diff=lfs merge=lfs -text
